@@ -43,11 +43,6 @@ label {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
-.book-connector:has(input:focus-visible) {
-  outline: 3px solid rgb(94 150 245 / 36%);
-  outline-offset: 2px;
-}
-
 .app-shell {
   display: grid;
   grid-template-columns: minmax(285px, 340px) minmax(0, 1fr);
@@ -160,26 +155,18 @@ select:focus-visible,
   border: 1px solid rgb(255 255 255 / 12%);
   border-radius: 12px;
   background: rgb(255 255 255 / 6%);
-  cursor: pointer;
+  cursor: default;
   transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
-.book-connector:hover {
-  border-color: rgb(113 164 238 / 46%);
-  background: rgb(255 255 255 / 10%);
-  transform: translateY(-1px);
-}
-
-.book-connector.connected {
+.book-connector.ready {
   border-color: rgb(89 170 135 / 45%);
   background: rgb(64 158 111 / 12%);
 }
 
-.book-connector input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
+.book-connector.error {
+  border-color: rgb(222 112 88 / 42%);
+  background: rgb(190 65 48 / 11%);
 }
 
 .book-volume {
@@ -208,9 +195,14 @@ select:focus-visible,
   background: rgb(255 255 255 / 8%);
 }
 
-.connected .connector-icon {
+.ready .connector-icon {
   color: #7ee0ad;
   background: rgb(65 166 116 / 15%);
+}
+
+.error .connector-icon {
+  color: #ff9a85;
+  background: rgb(197 74 51 / 16%);
 }
 
 .connector-icon .lucide-loader-circle,
@@ -568,6 +560,10 @@ select:focus-visible,
   font-family: Georgia, serif;
   font-size: 2rem;
   font-weight: 700;
+}
+
+.error-book {
+  color: #dce9f9;
 }
 
 .empty-book div {

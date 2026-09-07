@@ -3,7 +3,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
   type FormEvent,
 } from 'react';
 import {
@@ -11,7 +10,8 @@ import {
   ArrowRight,
   BookOpen,
   Check,
-  FileUp,
+  CircleAlert,
+  HardDrive,
   LoaderCircle,
   Minus,
   Plus,
@@ -31,7 +31,6 @@ GlobalWorkerOptions.workerSrc = pdfWorker;
 interface LoadedBook {
   document: PDFDocumentProxy;
   fileName: string;
-  objectUrl: string;
 }
 
 interface Selection {
@@ -131,9 +130,13 @@ function App() {
   const [problemInput, setProblemInput] = useState(1);
   const [selection, setSelection] = useState<Selection>({ chapter: 2, problem: 1 });
   const [loadedBooks, setLoadedBooks] = useState<Partial<Record<BookId, LoadedBook>>>({});
-  const [loadingBook, setLoadingBook] = useState<BookId | null>(null);
-  const [message, setMessage] = useState('교재 PDF를 연결하면 선택한 문제가 여기에 나타납니다.');
+  const [connectionState, setConnectionState] = useState<Record<BookId, 'loading' | 'ready' | 'error'>>({
+    '1': 'loading',
+    '2': 'loading',
+  });
+  const [message, setMessage] = useState('등록된 교재 PDF를 자동으로 연결하고 있습니다.');
   const [zoom, setZoom] = useState(1);
+  const autoConnectStarted = useRef(false);
 
   useEffect(() => {
     fetch('/problem-index.json')
@@ -145,14 +148,52 @@ function App() {
       .catch(() => setCatalogError(true));
   }, []);
 
-  useEffect(
-    () => () => {
-      Object.values(loadedBooks).forEach((book) => {
-        if (book) URL.revokeObjectURL(book.objectUrl);
-      });
-    },
-    [loadedBooks],
-  );
+  useEffect(() => {
+    if (!catalog || autoConnectStarted.current) return;
+    autoConnectStarted.current = true;
+
+    async function connectAll() {
+      const results = await Promise.allSettled(
+        (['1', '2'] as BookId[]).map(async (bookId) => {
+          const document = await getDocument({
+            url: `/api/pdf/${bookId}`,
+            rangeChunkSize: 1024 * 1024,
+          }).promise;
+          const expectedPages = catalog!.books[bookId].pageCount;
+          if (document.numPages !== expectedPages) {
+            await document.destroy();
+            throw new Error(`${catalog!.books[bookId].label} 페이지 수가 일치하지 않습니다.`);
+          }
+          setLoadedBooks((current) => ({
+            ...current,
+            [bookId]: {
+              document,
+              fileName: catalog!.books[bookId].fileHint,
+            },
+          }));
+          setConnectionState((current) => ({ ...current, [bookId]: 'ready' }));
+        }),
+      );
+
+      const failedBooks = results
+        .map((result, index) => (result.status === 'rejected' ? (String(index + 1) as BookId) : null))
+        .filter((bookId): bookId is BookId => bookId !== null);
+      if (failedBooks.length) {
+        setConnectionState((current) => {
+          const next = { ...current };
+          failedBooks.forEach((bookId) => {
+            next[bookId] = 'error';
+          });
+          return next;
+        });
+        setMessage('일부 교재를 자동으로 연결하지 못했습니다. 설정된 파일 경로를 확인해 주세요.');
+      } else {
+        setMessage('교재 PDF 두 권이 자동으로 연결되었습니다.');
+      }
+    }
+
+    void connectAll();
+  }, [catalog]);
 
   const chapters = useMemo(() => {
     if (!catalog) return [];
@@ -230,38 +271,6 @@ function App() {
     return () => lifecycle.abort();
   }, [catalog, loadedBooks]);
 
-  async function connectPdf(bookId: BookId, event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file || !catalog) return;
-    setLoadingBook(bookId);
-    setMessage(`${catalog.books[bookId].label} 파일을 확인하고 있습니다.`);
-    const objectUrl = URL.createObjectURL(file);
-    try {
-      const document = await getDocument({ url: objectUrl }).promise;
-      const expectedPages = catalog.books[bookId].pageCount;
-      if (document.numPages !== expectedPages) {
-        await document.destroy();
-        throw new Error(`페이지 수가 ${expectedPages}쪽인 교재를 선택해 주세요.`);
-      }
-      const previous = loadedBooks[bookId];
-      if (previous) {
-        await previous.document.destroy();
-        URL.revokeObjectURL(previous.objectUrl);
-      }
-      setLoadedBooks((current) => ({
-        ...current,
-        [bookId]: { document, fileName: file.name, objectUrl },
-      }));
-      setMessage(`${catalog.books[bookId].label} 연결 완료`);
-    } catch (error) {
-      URL.revokeObjectURL(objectUrl);
-      setMessage(error instanceof Error ? error.message : 'PDF를 열지 못했습니다.');
-    } finally {
-      setLoadingBook(null);
-      event.target.value = '';
-    }
-  }
-
   function submitSearch(event: FormEvent) {
     event.preventDefault();
     if (!catalog) return;
@@ -314,27 +323,31 @@ function App() {
             <span>01</span>
             <h2 id="pdf-heading">교재 연결</h2>
           </div>
-          <p className="section-copy">PDF는 업로드되지 않고 이 브라우저에서만 열립니다.</p>
+          <p className="section-copy">등록된 두 교재를 이 컴퓨터에서 자동으로 확인합니다.</p>
           <div className="book-connectors">
             {(['1', '2'] as BookId[]).map((bookId) => {
               const loaded = loadedBooks[bookId];
-              const loading = loadingBook === bookId;
+              const state = connectionState[bookId];
               return (
-                <label className={`book-connector ${loaded ? 'connected' : ''}`} key={bookId}>
-                  <input
-                    type="file"
-                    accept="application/pdf,.pdf"
-                    onChange={(event) => void connectPdf(bookId, event)}
-                    disabled={!catalog || loading}
-                  />
+                <div className={`book-connector automatic ${state}`} key={bookId}>
                   <span className="book-volume">VOL. {bookId}</span>
                   <span className="book-file">
-                    {loading ? '파일 확인 중' : loaded ? loaded.fileName : 'PDF 선택'}
+                    {state === 'loading'
+                      ? '자동 연결 중'
+                      : state === 'ready'
+                        ? loaded?.fileName
+                        : '파일을 찾지 못함'}
                   </span>
                   <span className="connector-icon" aria-hidden="true">
-                    {loading ? <LoaderCircle size={17} /> : loaded ? <Check size={17} /> : <FileUp size={17} />}
+                    {state === 'loading' ? (
+                      <LoaderCircle size={17} />
+                    ) : state === 'ready' ? (
+                      <Check size={17} />
+                    ) : (
+                      <CircleAlert size={17} />
+                    )}
                   </span>
-                </label>
+                </div>
               );
             })}
           </div>
@@ -452,16 +465,26 @@ function App() {
             </div>
           ) : !activePdf ? (
             <div className="empty-state ready-state">
-              <div className="empty-book" aria-hidden="true">
-                <span>{activeBookId}</span>
-                <div />
-              </div>
-              <span className="empty-kicker">준비 완료</span>
-              <strong>{activeBook?.label} PDF를 연결해 주세요</strong>
-              <p>
-                왼쪽의 VOL. {activeBookId}에서 파일을 한 번 선택하면
-                <br />이 브라우저 탭에서 바로 문제를 찾을 수 있습니다.
-              </p>
+              {connectionState[activeBookId] === 'loading' ? (
+                <>
+                  <LoaderCircle className="spin" size={28} />
+                  <strong>{activeBook?.label} 자동 연결 중</strong>
+                  <p>등록된 교재 파일을 확인하고 있습니다.</p>
+                </>
+              ) : (
+                <>
+                  <div className="empty-book error-book" aria-hidden="true">
+                    <HardDrive size={32} />
+                    <div />
+                  </div>
+                  <span className="empty-kicker">연결 확인 필요</span>
+                  <strong>{activeBook?.label} 파일을 찾지 못했습니다</strong>
+                  <p>
+                    halliday.config.json의 VOL. {activeBookId} 경로와
+                    <br />교재 파일 위치를 확인해 주세요.
+                  </p>
+                </>
+              )}
             </div>
           ) : activeProblem ? (
             <article className="problem-sheet" style={{ width: `${Math.round(760 * zoom)}px` }}>

@@ -4,3 +4,4 @@ tmp/
 .idea/
 *.log
 *.tsbuildinfo
+halliday.config.json
