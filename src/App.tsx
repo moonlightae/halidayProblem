@@ -1,6 +1,5 @@
 import {
   useEffect,
-  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -126,8 +125,8 @@ function ProblemCanvas({
 function App() {
   const [catalog, setCatalog] = useState<ProblemIndex | null>(null);
   const [catalogError, setCatalogError] = useState(false);
-  const [chapterInput, setChapterInput] = useState(2);
-  const [problemInput, setProblemInput] = useState(1);
+  const [chapterInput, setChapterInput] = useState('2');
+  const [problemInput, setProblemInput] = useState('1');
   const [selection, setSelection] = useState<Selection>({ chapter: 2, problem: 1 });
   const [loadedBooks, setLoadedBooks] = useState<Partial<Record<BookId, LoadedBook>>>({});
   const [connectionState, setConnectionState] = useState<Record<BookId, 'loading' | 'ready' | 'error'>>({
@@ -195,26 +194,17 @@ function App() {
     void connectAll();
   }, [catalog]);
 
-  const chapters = useMemo(() => {
-    if (!catalog) return [];
-    return (Object.entries(catalog.books) as Array<[BookId, (typeof catalog.books)[BookId]]>)
-      .flatMap(([bookId, book]) =>
-        Object.entries(book.chapters).map(([number, chapter]) => ({
-          bookId,
-          number: Number(number),
-          title: chapter.title,
-          problemCount: chapter.problemCount,
-        })),
-      )
-      .sort((a, b) => a.number - b.number);
-  }, [catalog]);
-
   const activeBookId = getBookId(selection.chapter);
   const activeBook = catalog?.books[activeBookId];
   const activeChapter = activeBook?.chapters[String(selection.chapter)];
   const activeProblem = activeChapter?.problems[String(selection.problem)];
   const activePdf = loadedBooks[activeBookId]?.document;
-  const draftChapter = catalog?.books[getBookId(chapterInput)].chapters[String(chapterInput)];
+  const chapterInputNumber = Number(chapterInput);
+  const problemInputNumber = Number(problemInput);
+  const draftChapter =
+    chapterInput !== '' && chapterInputNumber >= 1 && chapterInputNumber <= 44
+      ? catalog?.books[getBookId(chapterInputNumber)].chapters[String(chapterInputNumber)]
+      : undefined;
 
   useEffect(() => {
     const context = document.modelContext;
@@ -251,8 +241,8 @@ function App() {
             if (problemNumber < 1 || problemNumber > chapterEntry.problemCount) {
               throw new Error(`${chapterNumber}단원은 1번부터 ${chapterEntry.problemCount}번까지 있습니다.`);
             }
-            setChapterInput(chapterNumber);
-            setProblemInput(problemNumber);
+            setChapterInput(String(chapterNumber));
+            setProblemInput(String(problemNumber));
             setSelection({ chapter: chapterNumber, problem: problemNumber });
             setZoom(1);
             setMessage(`${chapterNumber}단원 ${problemNumber}번을 찾았습니다.`);
@@ -274,21 +264,27 @@ function App() {
   function submitSearch(event: FormEvent) {
     event.preventDefault();
     if (!catalog) return;
-    const bookId = getBookId(chapterInput);
-    const chapter = catalog.books[bookId].chapters[String(chapterInput)];
+    const bookId = getBookId(chapterInputNumber);
+    const chapter = catalog.books[bookId].chapters[String(chapterInputNumber)];
     if (!chapter) {
       setMessage('1단원부터 44단원 사이에서 선택해 주세요.');
       return;
     }
-    if (problemInput < 1 || problemInput > chapter.problemCount) {
-      setMessage(`${chapterInput}단원은 1번부터 ${chapter.problemCount}번까지 있습니다.`);
+    if (
+      !Number.isInteger(problemInputNumber) ||
+      problemInputNumber < 1 ||
+      problemInputNumber > chapter.problemCount
+    ) {
+      setMessage(`${chapterInputNumber}단원은 1번부터 ${chapter.problemCount}번까지 있습니다.`);
       return;
     }
-    setSelection({ chapter: chapterInput, problem: problemInput });
+    setChapterInput(String(chapterInputNumber));
+    setProblemInput(String(problemInputNumber));
+    setSelection({ chapter: chapterInputNumber, problem: problemInputNumber });
     setZoom(1);
     setMessage(
       loadedBooks[bookId]
-        ? `${chapterInput}단원 ${problemInput}번을 찾았습니다.`
+        ? `${chapterInputNumber}단원 ${problemInputNumber}번을 찾았습니다.`
         : `${catalog.books[bookId].label} PDF를 먼저 연결해 주세요.`,
     );
   }
@@ -299,8 +295,8 @@ function App() {
     if (nextProblem < 1 || nextProblem > activeChapter.problemCount) return;
     const next = { chapter: selection.chapter, problem: nextProblem };
     setSelection(next);
-    setChapterInput(next.chapter);
-    setProblemInput(next.problem);
+    setChapterInput(String(next.chapter));
+    setProblemInput(String(next.problem));
     setZoom(1);
     setMessage(`${next.chapter}단원 ${next.problem}번을 찾았습니다.`);
   }
@@ -359,44 +355,50 @@ function App() {
             <h2>문제 찾기</h2>
           </div>
           <label>
-            <span>단원</span>
-            <select
-              value={chapterInput}
-              onChange={(event) => {
-                const nextChapter = Number(event.target.value);
-                setChapterInput(nextChapter);
-                setProblemInput(1);
-              }}
-              disabled={!catalog}
-            >
-              <optgroup label="일반물리학 I">
-                {chapters.filter((item) => item.bookId === '1').map((item) => (
-                  <option key={item.number} value={item.number}>
-                    {item.number}. {item.title}
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="일반물리학 II">
-                {chapters.filter((item) => item.bookId === '2').map((item) => (
-                  <option key={item.number} value={item.number}>
-                    {item.number}. {item.title}
-                  </option>
-                ))}
-              </optgroup>
-            </select>
+            <span>단원 번호</span>
+            <div className="number-input-wrap">
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="off"
+                aria-label="단원 번호"
+                value={chapterInput}
+                onChange={(event) => {
+                  setChapterInput(event.target.value.replace(/\D/g, '').slice(0, 2));
+                  setProblemInput('1');
+                }}
+                onBlur={() => {
+                  if (chapterInput !== '') setChapterInput(String(Number(chapterInput)));
+                }}
+                disabled={!catalog}
+              />
+              <small>/ 44</small>
+            </div>
+            <span className="input-help">
+              {draftChapter?.title ?? '1부터 44까지 입력하세요'}
+            </span>
           </label>
           <label>
             <span>문제 번호</span>
             <div className="number-input-wrap">
               <input
-                type="number"
-                min={1}
-                max={draftChapter?.problemCount ?? 99}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="off"
+                aria-label="문제 번호"
                 value={problemInput}
-                onChange={(event) => setProblemInput(Number(event.target.value))}
+                onChange={(event) => setProblemInput(event.target.value.replace(/\D/g, '').slice(0, 3))}
+                onBlur={() => {
+                  if (problemInput !== '') setProblemInput(String(Number(problemInput)));
+                }}
               />
               <small>/ {draftChapter?.problemCount ?? '--'}</small>
             </div>
+            <span className="input-help">
+              {draftChapter ? `이 단원은 ${draftChapter.problemCount}문제` : '단원 번호를 먼저 확인하세요'}
+            </span>
           </label>
           <button className="search-button" type="submit" disabled={!catalog}>
             <Search size={18} /> 문제 보기
