@@ -159,8 +159,29 @@ select:focus-visible {
   border: 1px solid rgb(255 255 255 / 12%);
   border-radius: 12px;
   background: rgb(255 255 255 / 6%);
-  cursor: default;
+  cursor: pointer;
   transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.book-connector:hover {
+  border-color: rgb(112 166 244 / 48%);
+  background: rgb(255 255 255 / 9%);
+  transform: translateY(-1px);
+}
+
+.book-connector:focus-within {
+  outline: 3px solid rgb(94 150 245 / 36%);
+  outline-offset: 2px;
+}
+
+.book-upload-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .book-connector.ready {
