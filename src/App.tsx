@@ -50,11 +50,13 @@ function ProblemCanvas({
   segment,
   zoom,
   index,
+  label,
 }: {
   document: PDFDocumentProxy;
   segment: CropSegment;
   zoom: number;
   index: number;
+  label?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -123,7 +125,7 @@ function ProblemCanvas({
       {status === 'error' && (
         <div className="segment-error">이 부분을 렌더링하지 못했습니다.</div>
       )}
-      <canvas ref={canvasRef} aria-label={`문제 이미지 ${index + 1}`} />
+      <canvas ref={canvasRef} aria-label={label ?? `문제 이미지 ${index + 1}`} />
     </div>
   );
 }
@@ -575,6 +577,18 @@ function App() {
                   zoom={zoom}
                   index={index}
                 />
+              ))}
+              {activeProblem.figures?.map((segment, index) => (
+                <section className="related-figure" key={`figure-${segment.page}-${segment.y}`}>
+                  <span>{segment.label}</span>
+                  <ProblemCanvas
+                    document={activePdf}
+                    segment={segment}
+                    zoom={zoom}
+                    index={0}
+                    label={`${segment.label} 이미지 ${index + 1}`}
+                  />
+                </section>
               ))}
             </article>
           ) : (

@@ -8,8 +8,13 @@ export interface CropSegment {
   height: number;
 }
 
+export interface FigureSegment extends CropSegment {
+  label: string;
+}
+
 export interface ProblemEntry {
   segments: CropSegment[];
+  figures?: FigureSegment[];
 }
 
 export interface ChapterEntry {

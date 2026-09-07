@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from PIL import Image
 
 
@@ -83,6 +86,14 @@ BOOKS = {
             ChapterSpec(44, "쿼크, 경입자, 그리고 빅뱅", 687, 716),
         ],
     },
+}
+
+PROBLEM_COUNTS = {
+    1: 31, 2: 66, 3: 44, 4: 68, 5: 61, 6: 66, 7: 55, 8: 82, 9: 61, 10: 60,
+    11: 60, 12: 60, 13: 65, 14: 61, 15: 60, 16: 61, 17: 61, 18: 60, 19: 60, 20: 50,
+    21: 51, 22: 60, 23: 60, 24: 61, 25: 60, 26: 55, 27: 61, 28: 60, 29: 60,
+    30: 63, 31: 60, 32: 54, 33: 60, 34: 92, 35: 60, 36: 62, 37: 62, 38: 60,
+    39: 56, 40: 58, 41: 53, 42: 61, 43: 58, 44: 54,
 }
 
 
@@ -178,6 +189,284 @@ def find_problem_starts(image: Image.Image, first_page: bool) -> tuple[int, list
     return content_top, starts
 
 
+def run_windows_ocr(images: list[Path], scratch: Path, ocr_script: Path) -> dict[str, dict]:
+    def recognize(index_and_image: tuple[int, Path]) -> dict:
+        index, image = index_and_image
+        input_list = scratch / f"ocr-image-{index}.txt"
+        output = scratch / f"ocr-result-{index}.json"
+        input_list.write_text(str(image.resolve()), encoding="utf-8")
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(ocr_script.resolve()),
+                "-InputList",
+                str(input_list.resolve()),
+                "-Output",
+                str(output.resolve()),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        payload = json.loads(output.read_text(encoding="utf-8-sig"))
+        return payload["pages"][0]
+
+    worker_count = min(4, len(images))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+        pages = list(executor.map(recognize, enumerate(images)))
+    return {Path(page["path"]).name: page for page in pages}
+
+
+def ocr_problem_starts(ocr_page: dict, content_top: float) -> list[dict]:
+    width = ocr_page["width"]
+    height = ocr_page["height"]
+    starts: list[dict] = []
+    zones = {"left": (0.04, 0.12), "right": (0.48, 0.56)}
+
+    for line in ocr_page["lines"]:
+        words = line.get("words", [])
+        if len(words) < 2:
+            continue
+        first = words[0]
+        token = first["text"].strip()
+        range_match = re.fullmatch(r"(\d{1,3})\s*[-–—~]\s*(\d{1,3})[.,]?", token)
+        number_match = re.fullmatch(r"(\d{1,3})[.,]?", token)
+        if not range_match and not number_match:
+            continue
+        x = first["x"] / width
+        y = first["y"] / height
+        if y < content_top:
+            continue
+        for column, (x0, x1) in zones.items():
+            if x0 <= x <= x1:
+                start = {
+                    "column": column,
+                    "y": max(content_top, y - 0.006),
+                    "ocrNumber": int((range_match or number_match).group(1)),
+                }
+                if range_match:
+                    first_number = int(range_match.group(1))
+                    last_number = int(range_match.group(2))
+                    if first_number < last_number and last_number - first_number <= 30:
+                        start["numberRange"] = [first_number, last_number]
+                starts.append(start)
+                break
+    return starts
+
+
+def merge_problem_starts(color_starts: list[dict], ocr_starts: list[dict]) -> list[dict]:
+    combined: list[dict] = []
+    used_ocr: set[int] = set()
+    for color_start in color_starts:
+        candidates = [
+            (index, item)
+            for index, item in enumerate(ocr_starts)
+            if index not in used_ocr
+            and item["column"] == color_start["column"]
+            and abs(item["y"] - color_start["y"]) <= 0.022
+        ]
+        merged = dict(color_start)
+        if candidates:
+            index, nearest = min(candidates, key=lambda pair: abs(pair[1]["y"] - color_start["y"]))
+            used_ocr.add(index)
+            merged["ocrNumber"] = nearest["ocrNumber"]
+            if "numberRange" in nearest:
+                merged["numberRange"] = nearest["numberRange"]
+        combined.append(merged)
+
+    combined.extend(item for index, item in enumerate(ocr_starts) if index not in used_ocr)
+    combined.sort(key=lambda item: (0 if item["column"] == "left" else 1, item["y"]))
+
+    deduplicated: list[dict] = []
+    for item in combined:
+        if (
+            deduplicated
+            and deduplicated[-1]["column"] == item["column"]
+            and item["y"] - deduplicated[-1]["y"] <= 0.022
+        ):
+            current = deduplicated[-1]
+            if "numberRange" in item and "numberRange" not in current:
+                deduplicated[-1] = item
+            elif "ocrNumber" in item and "ocrNumber" not in current:
+                deduplicated[-1] = item
+            continue
+        deduplicated.append(item)
+    return deduplicated
+
+
+def candidate_cost(start: dict, problem_number: int, expected_count: int) -> int:
+    ocr_number = start.get("ocrNumber")
+    if ocr_number == problem_number:
+        return 0
+    if ocr_number is None or not 1 <= ocr_number <= expected_count:
+        return 2 if "detectedY" in start else 5
+    return 12 + min(abs(ocr_number - problem_number), 20)
+
+
+def resolve_problem_numbers(starts: list[dict], expected_count: int) -> list[dict]:
+    candidate_count = len(starts)
+    maximum_capacity = sum(
+        item.get("numberRange", [0, 0])[1] - item.get("numberRange", [0, 0])[0] + 1
+        if "numberRange" in item
+        else 1
+        for item in starts
+    )
+    if maximum_capacity < expected_count:
+        raise RuntimeError(
+            f"Only {maximum_capacity} problem numbers were found for {expected_count} expected problems"
+        )
+
+    infinity = 10**9
+    costs = [[infinity] * (candidate_count + 1) for _ in range(expected_count + 1)]
+    took = [[0] * (candidate_count + 1) for _ in range(expected_count + 1)]
+    for candidate_index in range(candidate_count + 1):
+        costs[0][candidate_index] = 0
+
+    for problem_number in range(1, expected_count + 1):
+        for candidate_index in range(1, candidate_count + 1):
+            skip_cost = costs[problem_number][candidate_index - 1]
+            start = starts[candidate_index - 1]
+            number_range = start.get("numberRange")
+            span = number_range[1] - number_range[0] + 1 if number_range else 1
+            range_is_aligned = not number_range or number_range == [problem_number - span + 1, problem_number]
+            take_cost = infinity
+            if problem_number >= span and range_is_aligned:
+                take_cost = costs[problem_number - span][candidate_index - 1]
+                if number_range:
+                    take_cost += 0
+                else:
+                    take_cost += candidate_cost(start, problem_number, expected_count)
+            if take_cost < skip_cost:
+                costs[problem_number][candidate_index] = take_cost
+                took[problem_number][candidate_index] = span
+            else:
+                costs[problem_number][candidate_index] = skip_cost
+
+    selected: list[dict] = []
+    problem_number = expected_count
+    candidate_index = candidate_count
+    while problem_number > 0 and candidate_index > 0:
+        span = took[problem_number][candidate_index]
+        if span:
+            selected.append(
+                {
+                    **starts[candidate_index - 1],
+                    "numbers": list(range(problem_number - span + 1, problem_number + 1)),
+                }
+            )
+            problem_number -= span
+        candidate_index -= 1
+    if problem_number:
+        raise RuntimeError(f"Could not align {expected_count} problem numbers")
+    selected.reverse()
+    return selected
+
+
+def parse_number_references(tokens: list[str]) -> list[int]:
+    references: list[int] = []
+    for token in tokens:
+        normalized = token.strip(".,()[]{}")
+        range_match = re.fullmatch(r"(\d{1,3})\s*[-–—~]\s*(\d{1,3})", normalized)
+        if range_match:
+            first_number, last_number = map(int, range_match.groups())
+            if first_number <= last_number and last_number - first_number <= 30:
+                references.extend(range(first_number, last_number + 1))
+                continue
+        references.extend(int(value) for value in re.findall(r"\d{1,3}", normalized))
+    return references
+
+
+def parse_figure_captions(ocr_page: dict, chapter_number: int) -> list[dict]:
+    captions: list[dict] = []
+    page_width = ocr_page["width"]
+    page_height = ocr_page["height"]
+    for line in ocr_page["lines"]:
+        words = line.get("words", [])
+        if not words or not (
+            "그림" in words[0]["text"]
+            or (words[0]["text"].startswith("그") and len(words[0]["text"]) <= 3)
+        ):
+            continue
+        bounds = {
+            "x0": min(word["x"] for word in words),
+            "y0": min(word["y"] for word in words),
+            "x1": max(word["x"] + word["width"] for word in words),
+            "y1": max(word["y"] + word["height"] for word in words),
+        }
+        figure_token = words[1]["text"] if len(words) > 1 else ""
+        digit_groups = re.findall(r"\d+", figure_token)
+        figure_number = ""
+        if len(digit_groups) >= 2:
+            figure_number = digit_groups[-1]
+        elif digit_groups:
+            digits = digit_groups[0]
+            chapter_digits = str(chapter_number)
+            if digits.startswith(chapter_digits) and len(digits) > len(chapter_digits):
+                figure_number = digits[len(chapter_digits) :]
+
+        marker = next(
+            (
+                index
+                for index, word in enumerate(words)
+                if any(fragment in word["text"] for fragment in ("연습", "습문", "인습", "년1습"))
+            ),
+            None,
+        )
+        references: list[int] = []
+        if marker is not None:
+            reference_tokens = [word["text"] for word in words[marker + 1 :]]
+            references.extend(parse_number_references(reference_tokens))
+            for token in reference_tokens:
+                if not re.search(r"\d", token) and re.fullmatch(r"[.·,Ss]+", token):
+                    if "S" in token or "s" in token:
+                        references.append(5)
+
+        center_x = (bounds["x0"] + bounds["x1"]) / 2 / page_width
+        captions.append(
+            {
+                "column": "left" if center_x < 0.5 else "right",
+                "y": bounds["y0"] / page_height,
+                "captionBottom": bounds["y1"] / page_height,
+                "label": f"그림 {chapter_number}-{figure_number}" if figure_number else "관련 그림",
+                "references": references,
+            }
+        )
+    return captions
+
+
+def figure_segment(image: Image.Image, caption: dict, page: int, block_top: float) -> dict:
+    width, height = image.size
+    if caption["column"] == "left":
+        x, crop_width = 0.052, 0.445
+    else:
+        x, crop_width = 0.497, 0.452
+    x0 = int(width * x)
+    x1 = int(width * (x + crop_width))
+    caption_y = int(height * caption["y"])
+    pixels = np.asarray(image)
+    ink_rows = np.flatnonzero((pixels[:, x0:x1].min(axis=2) < 225).sum(axis=1) >= 3).tolist()
+    groups = group_rows(ink_rows, 8)
+    previous_groups = [group for group in groups if group[-1] < caption_y]
+    substantial = [group for group in previous_groups[-4:] if len(group) >= 25]
+    if substantial:
+        top_px = substantial[-1][0] - 45
+    else:
+        top_px = caption_y - int(height * 0.22)
+    top = max(block_top, top_px / height)
+    bottom = min(0.972, caption["captionBottom"] + 0.01)
+    return {
+        "page": page,
+        "x": round(x, 5),
+        "y": round(top, 5),
+        "width": round(crop_width, 5),
+        "height": round(max(0.02, bottom - top), 5),
+        "label": caption["label"],
+    }
+
+
 def render_page(pdftoppm: Path, pdf: Path, page: int, output_prefix: Path) -> Path:
     subprocess.run(
         [
@@ -199,7 +488,10 @@ def render_page(pdftoppm: Path, pdf: Path, page: int, output_prefix: Path) -> Pa
 
 
 def build_segments(blocks: list[dict], starts: list[dict]) -> dict[str, dict]:
-    problems: dict[str, dict] = {}
+    max_number = max((number for start in starts for number in start["numbers"]), default=0)
+    problems: dict[str, dict] = {
+        str(number): {"segments": [], "figures": []} for number in range(1, max_number + 1)
+    }
     for index, start in enumerate(starts):
         next_start = starts[index + 1] if index + 1 < len(starts) else None
         start_block = start["block"]
@@ -224,11 +516,65 @@ def build_segments(blocks: list[dict], starts: list[dict]) -> dict[str, dict]:
                 }
             )
 
-        problems[str(index + 1)] = {"segments": segments}
+        for number in start["numbers"]:
+            problems[str(number)]["segments"] = segments
     return problems
 
 
-def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path) -> dict:
+def segment_overlaps(first: dict, second: dict) -> bool:
+    if first["page"] != second["page"]:
+        return False
+    if abs(first["x"] - second["x"]) > 0.03:
+        return False
+    overlap = min(first["y"] + first["height"], second["y"] + second["height"]) - max(
+        first["y"], second["y"]
+    )
+    return overlap > 0.015
+
+
+def attach_figures(
+    problems: dict[str, dict], starts: list[dict], figures: list[dict], rendered_pages: dict[int, Path]
+) -> int:
+    attached = 0
+    max_problem = len(problems)
+    for figure in figures:
+        preceding = [
+            start
+            for start in starts
+            if start["block"] < figure["block"]
+            or (start["block"] == figure["block"] and start["y"] < figure["y"])
+        ]
+        default_problem = preceding[-1]["numbers"][0] if preceding else None
+        parsed_references = sorted(
+            {number for number in figure["references"] if 1 <= number <= max_problem}
+        )
+        references = (
+            parsed_references
+            if default_problem is not None and default_problem in parsed_references
+            else ([default_problem] if default_problem is not None else [])
+        )
+        if not references:
+            continue
+
+        block_top = 0.064
+        with Image.open(rendered_pages[figure["page"]]).convert("RGB") as image:
+            segment = figure_segment(image, figure, figure["page"], block_top)
+        for problem_number in references:
+            problem = problems.get(str(problem_number))
+            if not problem or any(segment_overlaps(item, segment) for item in problem["segments"]):
+                continue
+            key = (segment["page"], segment["x"], segment["y"], segment["height"])
+            existing = {
+                (item["page"], item["x"], item["y"], item["height"])
+                for item in problem["figures"]
+            }
+            if key not in existing:
+                problem["figures"].append(segment)
+                attached += 1
+    return attached
+
+
+def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path, ocr_script: Path) -> dict:
     spec = BOOKS[book_id]
     chapters_out: dict[str, dict] = {}
     chapter_specs: list[ChapterSpec] = spec["chapters"]
@@ -241,41 +587,83 @@ def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path) -> dic
         )
         pdf_start = chapter.exercises + PDF_OFFSET
         pdf_end = exercise_end + PDF_OFFSET
-        blocks: list[dict] = []
-        starts: list[dict] = []
-        diagnostics: list[dict] = []
+        chapter_scratch = scratch / f"book-{book_id}-chapter-{chapter.number}"
+        chapter_scratch.mkdir(parents=True, exist_ok=True)
+        rendered_pages: dict[int, Path] = {}
+        page_data: dict[int, dict] = {}
+        try:
+            for pdf_page in range(pdf_start, pdf_end + 1):
+                prefix = chapter_scratch / f"page-{pdf_page}"
+                rendered = render_page(pdftoppm, pdf, pdf_page, prefix)
+                rendered_pages[pdf_page] = rendered
+                with Image.open(rendered).convert("RGB") as image:
+                    content_top_px, color_starts = find_problem_starts(image, pdf_page == pdf_start)
+                    _, height = image.size
+                content_top = content_top_px / height
+                page_data[pdf_page] = {
+                    "contentTop": content_top,
+                    "colorStarts": [
+                        item
+                        for item in color_starts
+                        if item["y"] >= content_top + (0.015 if pdf_page == pdf_start else 0)
+                    ],
+                }
 
-        for pdf_page in range(pdf_start, pdf_end + 1):
-            prefix = scratch / f"book-{book_id}-chapter-{chapter.number}-page-{pdf_page}"
-            rendered = render_page(pdftoppm, pdf, pdf_page, prefix)
-            with Image.open(rendered).convert("RGB") as image:
-                content_top_px, page_starts = find_problem_starts(image, pdf_page == pdf_start)
-                _, height = image.size
-            rendered.unlink(missing_ok=True)
+            ocr_pages = run_windows_ocr(list(rendered_pages.values()), chapter_scratch, ocr_script)
+            blocks: list[dict] = []
+            starts: list[dict] = []
+            figures: list[dict] = []
+            diagnostics: list[dict] = []
+            block_lookup: dict[tuple[int, str], int] = {}
 
-            for column in ("left", "right"):
-                blocks.append(
+            for pdf_page in range(pdf_start, pdf_end + 1):
+                rendered = rendered_pages[pdf_page]
+                ocr_page = ocr_pages[rendered.name]
+                content_top = page_data[pdf_page]["contentTop"]
+                ocr_starts = ocr_problem_starts(ocr_page, content_top)
+                page_starts = merge_problem_starts(page_data[pdf_page]["colorStarts"], ocr_starts)
+
+                for column in ("left", "right"):
+                    blocks.append(
+                        {
+                            "page": pdf_page,
+                            "column": column,
+                            "top": content_top,
+                            "bottom": 0.966,
+                        }
+                    )
+                    block_index = len(blocks) - 1
+                    block_lookup[(pdf_page, column)] = block_index
+                    for item in page_starts:
+                        if item["column"] == column:
+                            starts.append({**item, "block": block_index, "page": pdf_page})
+
+                page_figures = parse_figure_captions(ocr_page, chapter.number)
+                for figure in page_figures:
+                    figures.append(
+                        {
+                            **figure,
+                            "page": pdf_page,
+                            "block": block_lookup[(pdf_page, figure["column"])],
+                        }
+                    )
+
+                diagnostics.append(
                     {
                         "page": pdf_page,
-                        "column": column,
-                        "top": content_top_px / height,
-                        "bottom": 0.966,
+                        "left": sum(item["column"] == "left" for item in page_starts),
+                        "right": sum(item["column"] == "right" for item in page_starts),
+                        "ocr": len(ocr_starts),
+                        "figures": len(page_figures),
                     }
                 )
-                block_index = len(blocks) - 1
-                for item in page_starts:
-                    if item["column"] == column:
-                        starts.append({**item, "block": block_index, "page": pdf_page})
 
-            diagnostics.append(
-                {
-                    "page": pdf_page,
-                    "left": sum(item["column"] == "left" for item in page_starts),
-                    "right": sum(item["column"] == "right" for item in page_starts),
-                }
-            )
+            starts = resolve_problem_numbers(starts, PROBLEM_COUNTS[chapter.number])
+            problems = build_segments(blocks, starts)
+            figure_count = attach_figures(problems, starts, figures, rendered_pages)
+        finally:
+            shutil.rmtree(chapter_scratch, ignore_errors=True)
 
-        problems = build_segments(blocks, starts)
         if not problems:
             raise RuntimeError(f"No problems detected for chapter {chapter.number}")
         chapters_out[str(chapter.number)] = {
@@ -285,7 +673,7 @@ def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path) -> dic
             "problems": problems,
             "diagnostics": diagnostics,
         }
-        print(f"chapter {chapter.number}: {len(problems)} problems")
+        print(f"chapter {chapter.number}: {len(problems)} problems, {figure_count} related figure crops")
 
     return {
         "label": spec["label"],
@@ -300,6 +688,7 @@ def main() -> None:
     parser.add_argument("--book1", type=Path, required=True)
     parser.add_argument("--book2", type=Path, required=True)
     parser.add_argument("--pdftoppm", type=Path, required=True)
+    parser.add_argument("--ocr-script", type=Path, default=Path("scripts/windows-ocr.ps1"))
     parser.add_argument("--output", type=Path, default=Path("public/problem-index.json"))
     parser.add_argument("--scratch", type=Path, default=Path("tmp/pdfs/indexer"))
     args = parser.parse_args()
@@ -308,10 +697,10 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     try:
         books = {
-            "1": generate_book("1", args.book1, args.pdftoppm, args.scratch),
-            "2": generate_book("2", args.book2, args.pdftoppm, args.scratch),
+            "1": generate_book("1", args.book1, args.pdftoppm, args.scratch, args.ocr_script),
+            "2": generate_book("2", args.book2, args.pdftoppm, args.scratch, args.ocr_script),
         }
-        payload = {"version": 1, "pdfPageOffset": PDF_OFFSET, "books": books}
+        payload = {"version": 2, "pdfPageOffset": PDF_OFFSET, "books": books}
         args.output.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         print(f"wrote {args.output}")
     finally:

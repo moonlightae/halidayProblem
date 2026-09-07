@@ -483,6 +483,23 @@ select:focus-visible {
   background: white;
 }
 
+.related-figure {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid #dfe6ef;
+}
+
+.related-figure > span {
+  display: inline-flex;
+  margin-bottom: 10px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  color: #3669ad;
+  background: #edf4ff;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
 .problem-segment.loading canvas {
   min-height: 120px;
   opacity: 0.12;
