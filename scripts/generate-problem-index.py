@@ -88,7 +88,7 @@ BOOKS = {
 }
 
 PROBLEM_COUNTS = {
-    1: 31, 2: 66, 3: 44, 4: 68, 5: 61, 6: 66, 7: 55, 8: 82, 9: 61, 10: 60,
+    1: 32, 2: 66, 3: 44, 4: 68, 5: 61, 6: 66, 7: 55, 8: 82, 9: 61, 10: 60,
     11: 60, 12: 60, 13: 65, 14: 61, 15: 60, 16: 61, 17: 61, 18: 60, 19: 60, 20: 50,
     21: 51, 22: 60, 23: 60, 24: 61, 25: 60, 26: 55, 27: 61, 28: 60, 29: 60,
     30: 63, 31: 60, 32: 54, 33: 60, 34: 92, 35: 60, 36: 62, 37: 62, 38: 60,
@@ -604,7 +604,15 @@ def trim_blank_margins(problems: dict, rendered_pages: dict[int, Path]) -> None:
                 continue
             top = max(y0, y0 + int(rows[0]) - 3)
             bottom = min(y1, y0 + int(rows[-1]) + 4)
-            trimmed.append({**segment, 'y': round(top / height, 5), 'height': round((bottom - top) / height, 5)})
+            normalized_y = top / height
+            normalized_height = (bottom - top) / height
+            # A running page header can occupy the empty bridge between the
+            # left and right columns. Real one-line exercise text is roughly
+            # 1.5–2% of the page high; these headers are below 1.2% and sit at
+            # the very top. Do not attach them to the preceding exercise.
+            if normalized_y < 0.06 and normalized_height < 0.012:
+                continue
+            trimmed.append({**segment, 'y': round(normalized_y, 5), 'height': round(normalized_height, 5)})
         problem['segments'] = trimmed
 
 
@@ -805,7 +813,7 @@ def main() -> None:
         for book_id, book in books.items():
             previous['books'][book_id]['chapters'].update(book['chapters'])
         books = previous['books']
-    payload = {"version": 3, "pdfPageOffset": PDF_OFFSET, "books": books}
+    payload = {"version": 4, "pdfPageOffset": PDF_OFFSET, "books": books}
     args.output.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print(f"wrote {args.output}")
 

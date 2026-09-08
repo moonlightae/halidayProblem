@@ -30,6 +30,18 @@ crops. Eight OCR corrections in `REVIEWED_NUMBERS` were visually checked against
 the original scans; each is bound to a chapter, page, column and position.
 `audit-index.py` produces a contact sheet of unconfirmed selected starts.
 
+For an exact chapter-level boundary review, render every final problem crop into
+numbered contact sheets and compare consecutive cards with the source pages:
+
+```powershell
+python -B scripts/render-chapter-review.py 2 24 `
+  --pages-dir tmp/pdfs/verified-index/book-2-chapter-24 `
+  --output-dir tmp/pdfs/verified-index/chapter-24-review
+```
+
+The review renderer includes both the main problem segments and any separately
+attached figure segments. Its output stays under the ignored `tmp` directory.
+
 `generate-problem-index.py --chapters ...` supports selective regeneration while
 retaining the full book's chapter boundaries. It requires an existing output
 index to avoid publishing an accidentally incomplete catalog.

@@ -57,6 +57,7 @@ class IndexRegressionTests(unittest.TestCase):
 
     def test_published_index_is_complete_and_validated(self):
         data = json.loads(Path('public/problem-index.json').read_text(encoding='utf-8'))
+        self.assertEqual(data['version'], 4)
         chapters = {int(key): chapter for book in data['books'].values() for key, chapter in book['chapters'].items()}
         self.assertEqual(set(chapters), set(range(1, 45)))
         for number, chapter in chapters.items():
@@ -64,10 +65,13 @@ class IndexRegressionTests(unittest.TestCase):
             self.assertEqual(chapter['validation']['printedNumbersChecked'], chapter['problemCount'])
             self.assertTrue(all(problem['segments'] for problem in chapter['problems'].values()))
         problems = chapters[24]['problems']
+        self.assertEqual(chapters[1]['problemCount'], 32)
+        self.assertTrue(chapters[1]['problems']['32']['segments'])
         for number in (1, 4, 5, 6, 7, 60, 61):
             self.assertTrue(problems[str(number)]['segments'])
         self.assertEqual(problems['60']['segments'][0]['page'], 113)
         self.assertEqual(problems['61']['segments'][0]['page'], 113)
+        self.assertEqual(len(problems['59']['segments']), 1)
         for number in (5, 6):
             end = problems[str(number)]['segments'][-1]
             following = problems[str(number + 1)]['segments'][0]
