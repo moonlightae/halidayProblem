@@ -4,7 +4,6 @@ import argparse
 import concurrent.futures
 import json
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,6 +95,46 @@ PROBLEM_COUNTS = {
     39: 56, 40: 58, 41: 53, 42: 61, 43: 58, 44: 54,
 }
 
+# Visually checked against the supplied Korean 11th-edition scans at 120 dpi.
+# Match the page, column and position as well as the number, so a changed PDF
+# cannot silently inherit a correction intended for a different location.
+REVIEWED_NUMBERS = {
+    10: [(270, 'right', .74807, 35)],
+    23: [(82, 'left', .51742, 30), (83, 'left', .10926, 45)],
+    27: [(189, 'left', .43939, 24)],
+    30: [(280, 'left', .30705, 21)],
+    38: [(542, 'right', .81591, 28), (543, 'right', .35909, 48)],
+    42: [(667, 'right', .77845, 28)],
+}
+
+
+def apply_reviewed_numbers(starts: list[dict], chapter: int) -> None:
+    for page, column, y, number in REVIEWED_NUMBERS.get(chapter, []):
+        matches = [start for start in starts if start['page'] == page
+                   and start['column'] == column and abs(start['y'] - y) < .003]
+        if len(matches) != 1:
+            raise ValueError(f'Chapter {chapter}: reviewed number {number} needs reinspection')
+        matches[0]['ocrNumber'] = number
+        matches[0]['visuallyReviewed'] = True
+
+
+def validate_chapter(starts: list[dict], problems: dict, expected_count: int) -> None:
+    assigned = [number for start in starts for number in start['numbers']]
+    if assigned != list(range(1, expected_count + 1)):
+        raise ValueError('Missing, duplicate or out-of-order problem numbers')
+    for start in starts:
+        if start.get('ocrNumber') != start['numbers'][0]:
+            raise ValueError(f"Unconfirmed printed number: {start}")
+    for number, problem in problems.items():
+        if not problem['segments']:
+            raise ValueError(f'Problem {number} has an empty crop')
+        for segment in problem['segments']:
+            if not (0 <= segment['x'] < 1 and 0 <= segment['y'] < 1
+                    and 0 < segment['width'] <= 1 and 0 < segment['height'] <= 1
+                    and segment['x'] + segment['width'] <= 1.00001
+                    and segment['y'] + segment['height'] <= 1.00001):
+                raise ValueError(f'Invalid crop for problem {number}: {segment}')
+
 
 def is_problem_color(pixel: tuple[int, int, int]) -> bool:
     red, green, blue = pixel
@@ -132,13 +171,15 @@ def find_exercise_top(image: Image.Image) -> int:
     groups = group_rows(candidates, 4)
     if not groups:
         return int(height * 0.065)
-    group = max(groups, key=lambda item: len(item))
+    # The first wide orange band is the exercise heading. A later diagram
+    # can contain a much larger orange area and must not move the page top.
+    group = groups[0]
     return max(int(height * 0.06), group[0] - 4)
 
 
 def find_problem_starts(image: Image.Image, first_page: bool) -> tuple[int, list[dict]]:
     width, height = image.size
-    content_top = find_exercise_top(image) if first_page else int(height * 0.065)
+    content_top = find_exercise_top(image) if first_page else int(height * 0.05)
     starts: list[dict] = []
     zones = {
         "left": (int(width * 0.05), int(width * 0.105)),
@@ -148,7 +189,7 @@ def find_problem_starts(image: Image.Image, first_page: bool) -> tuple[int, list
     for column, (x0, x1) in zones.items():
         qualifying_rows: list[int] = []
         row_pixels: dict[int, list[int]] = {}
-        for y in range(content_top + 12, int(height * 0.965)):
+        for y in range(content_top + 1, int(height * 0.965)):
             xs = [x for x in range(x0, x1) if is_problem_color(image.getpixel((x, y)))]
             if len(xs) >= 2:
                 qualifying_rows.append(y)
@@ -220,26 +261,34 @@ def run_windows_ocr(images: list[Path], scratch: Path, ocr_script: Path) -> dict
     return {Path(page["path"]).name: page for page in pages}
 
 
-def ocr_problem_starts(ocr_page: dict, content_top: float) -> list[dict]:
+def ocr_problem_starts(ocr_page: dict, content_top: float, image: Image.Image | None = None) -> list[dict]:
     width = ocr_page["width"]
     height = ocr_page["height"]
     starts: list[dict] = []
     zones = {"left": (0.04, 0.12), "right": (0.48, 0.56)}
 
-    for line in ocr_page["lines"]:
-        words = line.get("words", [])
-        if len(words) < 2:
-            continue
-        first = words[0]
+    # OCR sometimes merges the two columns into one line, or joins a number
+    # to the following word. Verify every margin word against its printed color.
+    words = [word for line in ocr_page['lines'] for word in line.get('words', [])]
+    for first in words:
         token = first["text"].strip()
         range_match = re.fullmatch(r"(\d{1,3})\s*[-–—~]\s*(\d{1,3})[.,]?", token)
-        number_match = re.fullmatch(r"(\d{1,3})[.,]?", token)
+        number_match = re.match(r"^(\d{1,3})(?!\d)", token)
         if not range_match and not number_match:
             continue
         x = first["x"] / width
         y = first["y"] / height
         if y < content_top:
             continue
+        if image is not None:
+            x0, y0 = int(first['x']), int(first['y'])
+            x1 = min(width, x0 + max(10, min(int(first['width']), 28)))
+            y1 = min(height, y0 + int(first['height']) + 1)
+            colored = sum(is_problem_color(image.getpixel((px, py)))
+                          for py in range(max(0, y0), y1)
+                          for px in range(max(0, x0), x1))
+            if colored < 4:
+                continue
         for column, (x0, x1) in zones.items():
             if x0 <= x <= x1:
                 start = {
@@ -266,7 +315,7 @@ def merge_problem_starts(color_starts: list[dict], ocr_starts: list[dict]) -> li
             for index, item in enumerate(ocr_starts)
             if index not in used_ocr
             and item["column"] == color_start["column"]
-            and abs(item["y"] - color_start["y"]) <= 0.022
+            and abs(item["y"] - color_start["y"]) <= 0.012
         ]
         merged = dict(color_start)
         if candidates:
@@ -285,7 +334,7 @@ def merge_problem_starts(color_starts: list[dict], ocr_starts: list[dict]) -> li
         if (
             deduplicated
             and deduplicated[-1]["column"] == item["column"]
-            and item["y"] - deduplicated[-1]["y"] <= 0.022
+            and item["y"] - deduplicated[-1]["y"] <= 0.008
         ):
             current = deduplicated[-1]
             if "numberRange" in item and "numberRange" not in current:
@@ -415,6 +464,8 @@ def parse_figure_captions(ocr_page: dict, chapter_number: int) -> list[dict]:
             ),
             None,
         )
+        if marker is None:
+            continue
         references: list[int] = []
         if marker is not None:
             reference_tokens = [word["text"] for word in words[marker + 1 :]]
@@ -501,8 +552,9 @@ def build_segments(blocks: list[dict], starts: list[dict]) -> dict[str, dict]:
         for block_index in range(start_block, end_block + 1):
             block = blocks[block_index]
             y0 = start["y"] if block_index == start_block else block["top"]
-            y1 = next_start["y"] - 0.006 if next_start and block_index == end_block else block["bottom"]
-            if y1 - y0 < 0.018:
+            y1 = next_start["y"] - 0.001 if next_start and block_index == end_block else block["bottom"]
+            # A legitimate one-line exercise can be only 2% of a page tall.
+            if y1 - y0 < 0.003:
                 continue
             x = 0.052 if block["column"] == "left" else 0.497
             width = 0.445 if block["column"] == "left" else 0.452
@@ -530,6 +582,30 @@ def segment_overlaps(first: dict, second: dict) -> bool:
         first["y"], second["y"]
     )
     return overlap > 0.015
+
+
+def trim_blank_margins(problems: dict, rendered_pages: dict[int, Path]) -> None:
+    """Keep only ink-bearing rows; never append blank end-of-chapter pages."""
+    pixels_by_page = {}
+    for page, path in rendered_pages.items():
+        with Image.open(path).convert('RGB') as image:
+            pixels_by_page[page] = np.asarray(image)
+    for problem in problems.values():
+        trimmed = []
+        for segment in problem['segments']:
+            pixels = pixels_by_page[segment['page']]
+            height, width = pixels.shape[:2]
+            x0 = int(width * segment['x'])
+            x1 = int(width * (segment['x'] + segment['width']))
+            y0 = int(height * segment['y'])
+            y1 = min(height, int(height * (segment['y'] + segment['height'])))
+            rows = np.flatnonzero((pixels[y0:y1, x0:x1].min(axis=2) < 210).sum(axis=1) >= 3)
+            if len(rows) < 3:
+                continue
+            top = max(y0, y0 + int(rows[0]) - 3)
+            bottom = min(y1, y0 + int(rows[-1]) + 4)
+            trimmed.append({**segment, 'y': round(top / height, 5), 'height': round((bottom - top) / height, 5)})
+        problem['segments'] = trimmed
 
 
 def attach_figures(
@@ -574,12 +650,14 @@ def attach_figures(
     return attached
 
 
-def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path, ocr_script: Path) -> dict:
+def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path, ocr_script: Path, selected_chapters: set[int] | None = None) -> dict:
     spec = BOOKS[book_id]
     chapters_out: dict[str, dict] = {}
     chapter_specs: list[ChapterSpec] = spec["chapters"]
 
     for chapter_index, chapter in enumerate(chapter_specs):
+        if selected_chapters and chapter.number not in selected_chapters:
+            continue
         exercise_end = (
             chapter_specs[chapter_index + 1].start - 1
             if chapter_index + 1 < len(chapter_specs)
@@ -594,7 +672,9 @@ def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path, ocr_sc
         try:
             for pdf_page in range(pdf_start, pdf_end + 1):
                 prefix = chapter_scratch / f"page-{pdf_page}"
-                rendered = render_page(pdftoppm, pdf, pdf_page, prefix)
+                rendered = prefix.with_suffix('.png')
+                if not rendered.exists():
+                    rendered = render_page(pdftoppm, pdf, pdf_page, prefix)
                 rendered_pages[pdf_page] = rendered
                 with Image.open(rendered).convert("RGB") as image:
                     content_top_px, color_starts = find_problem_starts(image, pdf_page == pdf_start)
@@ -609,7 +689,12 @@ def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path, ocr_sc
                     ],
                 }
 
-            ocr_pages = run_windows_ocr(list(rendered_pages.values()), chapter_scratch, ocr_script)
+            ocr_cache = chapter_scratch / 'pages-ocr.json'
+            if ocr_cache.exists():
+                ocr_pages = json.loads(ocr_cache.read_text(encoding='utf-8'))
+            else:
+                ocr_pages = run_windows_ocr(list(rendered_pages.values()), chapter_scratch, ocr_script)
+                ocr_cache.write_text(json.dumps(ocr_pages, ensure_ascii=False), encoding='utf-8')
             blocks: list[dict] = []
             starts: list[dict] = []
             figures: list[dict] = []
@@ -620,7 +705,8 @@ def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path, ocr_sc
                 rendered = rendered_pages[pdf_page]
                 ocr_page = ocr_pages[rendered.name]
                 content_top = page_data[pdf_page]["contentTop"]
-                ocr_starts = ocr_problem_starts(ocr_page, content_top)
+                with Image.open(rendered).convert('RGB') as image:
+                    ocr_starts = ocr_problem_starts(ocr_page, content_top, image)
                 page_starts = merge_problem_starts(page_data[pdf_page]["colorStarts"], ocr_starts)
 
                 for column in ("left", "right"):
@@ -658,11 +744,17 @@ def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path, ocr_sc
                     }
                 )
 
+            apply_reviewed_numbers(starts, chapter.number)
+            (chapter_scratch / 'candidates.json').write_text(json.dumps(starts), encoding='utf-8')
             starts = resolve_problem_numbers(starts, PROBLEM_COUNTS[chapter.number])
+            (chapter_scratch / 'selected.json').write_text(json.dumps(starts), encoding='utf-8')
             problems = build_segments(blocks, starts)
+            trim_blank_margins(problems, rendered_pages)
+            validate_chapter(starts, problems, PROBLEM_COUNTS[chapter.number])
             figure_count = attach_figures(problems, starts, figures, rendered_pages)
-        finally:
-            shutil.rmtree(chapter_scratch, ignore_errors=True)
+        except Exception:
+            print(f'Inspection checkpoints retained in {chapter_scratch}', flush=True)
+            raise
 
         if not problems:
             raise RuntimeError(f"No problems detected for chapter {chapter.number}")
@@ -672,7 +764,13 @@ def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path, ocr_sc
             "problemCount": len(problems),
             "problems": problems,
             "diagnostics": diagnostics,
+            "validation": {
+                "printedNumbersChecked": len(problems),
+                "visuallyReviewedStarts": sum(bool(item.get('visuallyReviewed')) for item in starts),
+                "emptyCrops": 0,
+            },
         }
+        (chapter_scratch / 'chapter.json').write_text(json.dumps(chapters_out[str(chapter.number)], ensure_ascii=False), encoding='utf-8')
         print(f"chapter {chapter.number}: {len(problems)} problems, {figure_count} related figure crops")
 
     return {
@@ -691,20 +789,25 @@ def main() -> None:
     parser.add_argument("--ocr-script", type=Path, default=Path("scripts/windows-ocr.ps1"))
     parser.add_argument("--output", type=Path, default=Path("public/problem-index.json"))
     parser.add_argument("--scratch", type=Path, default=Path("tmp/pdfs/indexer"))
+    parser.add_argument('--chapters', type=int, nargs='+', help='Regenerate only these chapters; page bounds still use the complete book.')
     args = parser.parse_args()
 
     args.scratch.mkdir(parents=True, exist_ok=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        books = {
-            "1": generate_book("1", args.book1, args.pdftoppm, args.scratch, args.ocr_script),
-            "2": generate_book("2", args.book2, args.pdftoppm, args.scratch, args.ocr_script),
-        }
-        payload = {"version": 2, "pdfPageOffset": PDF_OFFSET, "books": books}
-        args.output.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-        print(f"wrote {args.output}")
-    finally:
-        shutil.rmtree(args.scratch, ignore_errors=True)
+    books = {
+        "1": generate_book("1", args.book1, args.pdftoppm, args.scratch, args.ocr_script, set(args.chapters or [])),
+        "2": generate_book("2", args.book2, args.pdftoppm, args.scratch, args.ocr_script, set(args.chapters or [])),
+    }
+    if args.chapters:
+        if not args.output.exists():
+            raise ValueError('Partial regeneration requires an existing complete output index')
+        previous = json.loads(args.output.read_text(encoding='utf-8'))
+        for book_id, book in books.items():
+            previous['books'][book_id]['chapters'].update(book['chapters'])
+        books = previous['books']
+    payload = {"version": 3, "pdfPageOffset": PDF_OFFSET, "books": books}
+    args.output.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    print(f"wrote {args.output}")
 
 
 if __name__ == "__main__":
