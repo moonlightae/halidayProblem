@@ -30,6 +30,11 @@ crops. Eight OCR corrections in `REVIEWED_NUMBERS` were visually checked against
 the original scans; each is bound to a chapter, page, column and position.
 `audit-index.py` produces a contact sheet of unconfirmed selected starts.
 
+The generator also removes small running headers from page-top continuations,
+links figures mentioned in the problem text, and handles visually reviewed
+full-width floating tables that do not follow the normal two-column reading
+order. `test-problem-index.py` contains regressions for these layout cases.
+
 For an exact chapter-level boundary review, render every final problem crop into
 numbered contact sheets and compare consecutive cards with the source pages:
 

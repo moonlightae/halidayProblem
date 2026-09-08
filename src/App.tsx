@@ -151,7 +151,7 @@ function App() {
   const objectUrls = useRef<Partial<Record<BookId, string>>>({});
 
   useEffect(() => {
-    fetch('/problem-index.json?v=4', { cache: 'no-store' })
+    fetch('/problem-index.json?v=5', { cache: 'no-store' })
       .then((response) => {
         if (!response.ok) throw new Error('Index load failed');
         return response.json() as Promise<ProblemIndex>;

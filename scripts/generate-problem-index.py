@@ -89,9 +89,9 @@ BOOKS = {
 
 PROBLEM_COUNTS = {
     1: 32, 2: 66, 3: 44, 4: 68, 5: 61, 6: 66, 7: 55, 8: 82, 9: 61, 10: 60,
-    11: 60, 12: 60, 13: 65, 14: 61, 15: 60, 16: 61, 17: 61, 18: 60, 19: 60, 20: 50,
+    11: 60, 12: 60, 13: 66, 14: 61, 15: 61, 16: 61, 17: 61, 18: 60, 19: 60, 20: 50,
     21: 51, 22: 60, 23: 60, 24: 61, 25: 60, 26: 55, 27: 61, 28: 60, 29: 60,
-    30: 63, 31: 60, 32: 54, 33: 60, 34: 92, 35: 60, 36: 62, 37: 62, 38: 60,
+    30: 63, 31: 60, 32: 54, 33: 60, 34: 92, 35: 61, 36: 62, 37: 62, 38: 60,
     39: 56, 40: 58, 41: 53, 42: 61, 43: 58, 44: 54,
 }
 
@@ -105,6 +105,24 @@ REVIEWED_NUMBERS = {
     30: [(280, 'left', .30705, 21)],
     38: [(542, 'right', .81591, 28), (543, 'right', .35909, 48)],
     42: [(667, 'right', .77845, 28)],
+}
+
+# Full-width floating tables whose physical page position does not follow the
+# two-column reading order. Coordinates were visually checked against the
+# supplied Korean 11th-edition scans.
+REVIEWED_VISUALS = {
+    34: [
+        {"page": 409, "x": 0.195, "y": 0.765, "width": 0.59, "height": 0.168,
+         "label": "표 34-3", "references": list(range(1, 7))},
+        {"page": 410, "x": 0.195, "y": 0.638, "width": 0.59, "height": 0.152,
+         "label": "표 34-4", "references": list(range(11, 16))},
+        {"page": 410, "x": 0.195, "y": 0.797, "width": 0.59, "height": 0.148,
+         "label": "표 34-5", "references": list(range(16, 21))},
+        {"page": 411, "x": 0.195, "y": 0.608, "width": 0.59, "height": 0.201,
+         "label": "표 34-6", "references": list(range(25, 34))},
+        {"page": 411, "x": 0.195, "y": 0.817, "width": 0.59, "height": 0.13,
+         "label": "표 34-7", "references": list(range(38, 42))},
+    ],
 }
 
 
@@ -424,6 +442,20 @@ def parse_number_references(tokens: list[str]) -> list[int]:
             if first_number <= last_number and last_number - first_number <= 30:
                 references.extend(range(first_number, last_number + 1))
                 continue
+        digit_groups = re.findall(r"\d{1,3}", normalized)
+        if len(digit_groups) == 2 and len(digit_groups[1]) < len(digit_groups[0]):
+            # OCR can replace the dash and the repeated tens digit with a
+            # Korean glyph (for example, "69蕁3" for "69-73"). Reconstruct
+            # the nearest non-decreasing endpoint instead of treating the
+            # trailing 3 as exercise 3.
+            first_number, suffix = map(int, digit_groups)
+            modulus = 10 ** len(digit_groups[1])
+            last_number = (first_number // modulus) * modulus + suffix
+            if last_number < first_number:
+                last_number += modulus
+            if last_number - first_number <= 30:
+                references.extend(range(first_number, last_number + 1))
+                continue
         references.extend(int(value) for value in re.findall(r"\d{1,3}", normalized))
     return references
 
@@ -478,19 +510,56 @@ def parse_figure_captions(ocr_page: dict, chapter_number: int) -> list[dict]:
         center_x = (bounds["x0"] + bounds["x1"]) / 2 / page_width
         captions.append(
             {
-                "column": "left" if center_x < 0.5 else "right",
+                "column": (
+                    "wide" if 0.43 <= center_x <= 0.57
+                    else ("left" if center_x < 0.5 else "right")
+                ),
                 "y": bounds["y0"] / page_height,
                 "captionBottom": bounds["y1"] / page_height,
                 "label": f"그림 {chapter_number}-{figure_number}" if figure_number else "관련 그림",
+                "figureNumber": int(figure_number) if figure_number else None,
                 "references": references,
             }
         )
     return captions
 
 
+def find_figure_mentions(problems: dict, ocr_pages: dict, chapter_number: int) -> dict[int, set[int]]:
+    """Map figure numbers mentioned in each final problem text to problem numbers."""
+    mentions: dict[int, set[int]] = {}
+    pattern = re.compile(rf"그림\s*{chapter_number}\s*[-•·]\s*(\d+)")
+    for problem_number, problem in problems.items():
+        text_parts = []
+        for segment in problem["segments"]:
+            page = ocr_pages.get(f"page-{segment['page']}.png")
+            if not page:
+                continue
+            page_width = page["width"]
+            page_height = page["height"]
+            x0 = segment["x"]
+            x1 = x0 + segment["width"]
+            y0 = segment["y"]
+            y1 = y0 + segment["height"]
+            for line in page["lines"]:
+                selected = []
+                for word in line.get("words", []):
+                    center_x = (word["x"] + word["width"] / 2) / page_width
+                    center_y = (word["y"] + word["height"] / 2) / page_height
+                    if x0 <= center_x <= x1 and y0 <= center_y <= y1:
+                        selected.append(word["text"])
+                if selected:
+                    text_parts.append(" ".join(selected))
+        text = " ".join(text_parts)
+        for match in pattern.finditer(text):
+            mentions.setdefault(int(match.group(1)), set()).add(int(problem_number))
+    return mentions
+
+
 def figure_segment(image: Image.Image, caption: dict, page: int, block_top: float) -> dict:
     width, height = image.size
-    if caption["column"] == "left":
+    if caption["column"] == "wide":
+        x, crop_width = 0.052, 0.897
+    elif caption["column"] == "left":
         x, crop_width = 0.052, 0.445
     else:
         x, crop_width = 0.497, 0.452
@@ -503,7 +572,12 @@ def figure_segment(image: Image.Image, caption: dict, page: int, block_top: floa
     previous_groups = [group for group in groups if group[-1] < caption_y]
     substantial = [group for group in previous_groups[-4:] if len(group) >= 25]
     if substantial:
-        top_px = substantial[-1][0] - 45
+        # Wide figures frequently contain several vertically stacked
+        # subfigures. Their earliest substantial band is part of the same
+        # figure, while a normal column figure should stay anchored to the
+        # closest substantial band above its caption.
+        anchor = substantial[0] if caption["column"] == "wide" else substantial[-1]
+        top_px = anchor[0] - 45
     else:
         top_px = caption_y - int(height * 0.22)
     top = max(block_top, top_px / height)
@@ -602,6 +676,19 @@ def trim_blank_margins(problems: dict, rendered_pages: dict[int, Path]) -> None:
             rows = np.flatnonzero((pixels[y0:y1, x0:x1].min(axis=2) < 210).sum(axis=1) >= 3)
             if len(rows) < 3:
                 continue
+            absolute_groups = group_rows((rows + y0).tolist(), 4)
+            if len(absolute_groups) >= 2:
+                first_group, second_group = absolute_groups[:2]
+                # Running headers are smaller than body text and separated
+                # from a continued exercise by a conspicuously large gap.
+                # Remove just that header band while retaining the continuation.
+                if (
+                    first_group[-1] / height < 0.06
+                    and len(first_group) <= 10
+                    and second_group[0] / height > 0.068
+                    and second_group[0] - first_group[-1] > height * 0.01
+                ):
+                    rows = rows[rows + y0 >= second_group[0]]
             top = max(y0, y0 + int(rows[0]) - 3)
             bottom = min(y1, y0 + int(rows[-1]) + 4)
             normalized_y = top / height
@@ -617,7 +704,11 @@ def trim_blank_margins(problems: dict, rendered_pages: dict[int, Path]) -> None:
 
 
 def attach_figures(
-    problems: dict[str, dict], starts: list[dict], figures: list[dict], rendered_pages: dict[int, Path]
+    problems: dict[str, dict],
+    starts: list[dict],
+    figures: list[dict],
+    rendered_pages: dict[int, Path],
+    figure_mentions: dict[int, set[int]],
 ) -> int:
     attached = 0
     max_problem = len(problems)
@@ -632,11 +723,13 @@ def attach_figures(
         parsed_references = sorted(
             {number for number in figure["references"] if 1 <= number <= max_problem}
         )
-        references = (
+        references = set(
             parsed_references
             if default_problem is not None and default_problem in parsed_references
             else ([default_problem] if default_problem is not None else [])
         )
+        if figure["figureNumber"] is not None:
+            references.update(figure_mentions.get(figure["figureNumber"], set()))
         if not references:
             continue
 
@@ -645,7 +738,38 @@ def attach_figures(
             segment = figure_segment(image, figure, figure["page"], block_top)
         for problem_number in references:
             problem = problems.get(str(problem_number))
-            if not problem or any(segment_overlaps(item, segment) for item in problem["segments"]):
+            if not problem:
+                continue
+            if figure["column"] == "wide":
+                # A two-column figure is often already present as a clipped
+                # half inside the continuation crop. Remove its vertical band
+                # from both text columns and attach one full-width copy.
+                figure_top = segment["y"]
+                figure_bottom = segment["y"] + segment["height"]
+                text_segments = []
+                for item in problem["segments"]:
+                    if item["page"] != segment["page"]:
+                        text_segments.append(item)
+                        continue
+                    item_top = item["y"]
+                    item_bottom = item["y"] + item["height"]
+                    overlap = min(item_bottom, figure_bottom) - max(item_top, figure_top)
+                    if overlap <= 0.015:
+                        text_segments.append(item)
+                        continue
+                    if item_top < figure_top - 0.003:
+                        text_segments.append({
+                            **item,
+                            "height": round(figure_top - 0.003 - item_top, 5),
+                        })
+                    if item_bottom > figure_bottom + 0.003:
+                        text_segments.append({
+                            **item,
+                            "y": round(figure_bottom + 0.003, 5),
+                            "height": round(item_bottom - figure_bottom - 0.003, 5),
+                        })
+                problem["segments"] = text_segments
+            elif any(segment_overlaps(item, segment) for item in problem["segments"]):
                 continue
             key = (segment["page"], segment["x"], segment["y"], segment["height"])
             existing = {
@@ -655,6 +779,48 @@ def attach_figures(
             if key not in existing:
                 problem["figures"].append(segment)
                 attached += 1
+    return attached
+
+
+def subtract_wide_visual(problems: dict, visual: dict) -> None:
+    """Remove a full-width floating visual from every sequential text crop."""
+    visual_top = visual["y"]
+    visual_bottom = visual_top + visual["height"]
+    for problem in problems.values():
+        text_segments = []
+        for item in problem["segments"]:
+            if item["page"] != visual["page"]:
+                text_segments.append(item)
+                continue
+            item_top = item["y"]
+            item_bottom = item_top + item["height"]
+            overlap = min(item_bottom, visual_bottom) - max(item_top, visual_top)
+            if overlap <= 0.015:
+                text_segments.append(item)
+                continue
+            if item_top < visual_top - 0.003:
+                text_segments.append({
+                    **item,
+                    "height": round(visual_top - 0.003 - item_top, 5),
+                })
+            if item_bottom > visual_bottom + 0.003:
+                text_segments.append({
+                    **item,
+                    "y": round(visual_bottom + 0.003, 5),
+                    "height": round(item_bottom - visual_bottom - 0.003, 5),
+                })
+        problem["segments"] = text_segments
+
+
+def attach_reviewed_visuals(problems: dict, chapter_number: int) -> int:
+    attached = 0
+    for visual in REVIEWED_VISUALS.get(chapter_number, []):
+        subtract_wide_visual(problems, visual)
+        segment = {key: value for key, value in visual.items() if key != "references"}
+        for problem_number in visual["references"]:
+            problem = problems[str(problem_number)]
+            problem["figures"].append(segment.copy())
+            attached += 1
     return attached
 
 
@@ -738,7 +904,10 @@ def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path, ocr_sc
                         {
                             **figure,
                             "page": pdf_page,
-                            "block": block_lookup[(pdf_page, figure["column"])],
+                            "block": block_lookup[(
+                                pdf_page,
+                                "left" if figure["column"] == "wide" else figure["column"],
+                            )],
                         }
                     )
 
@@ -759,7 +928,12 @@ def generate_book(book_id: str, pdf: Path, pdftoppm: Path, scratch: Path, ocr_sc
             problems = build_segments(blocks, starts)
             trim_blank_margins(problems, rendered_pages)
             validate_chapter(starts, problems, PROBLEM_COUNTS[chapter.number])
-            figure_count = attach_figures(problems, starts, figures, rendered_pages)
+            figure_mentions = find_figure_mentions(problems, ocr_pages, chapter.number)
+            figure_count = attach_figures(
+                problems, starts, figures, rendered_pages, figure_mentions
+            )
+            figure_count += attach_reviewed_visuals(problems, chapter.number)
+            trim_blank_margins(problems, rendered_pages)
         except Exception:
             print(f'Inspection checkpoints retained in {chapter_scratch}', flush=True)
             raise
@@ -813,7 +987,7 @@ def main() -> None:
         for book_id, book in books.items():
             previous['books'][book_id]['chapters'].update(book['chapters'])
         books = previous['books']
-    payload = {"version": 4, "pdfPageOffset": PDF_OFFSET, "books": books}
+    payload = {"version": 5, "pdfPageOffset": PDF_OFFSET, "books": books}
     args.output.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print(f"wrote {args.output}")
 
