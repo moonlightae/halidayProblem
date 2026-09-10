@@ -26,6 +26,13 @@ class IndexRegressionTests(unittest.TestCase):
         draw.rectangle((100, 750, 200, 850), fill=(180, 70, 30))
         self.assertLess(g.find_exercise_top(image), 320)
 
+    def test_chapter_header_cannot_replace_nearby_exercise_heading(self):
+        image = Image.new('RGB', (1000, 1300), 'white')
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((60, 75, 180, 87), fill=(180, 70, 30))
+        draw.rectangle((60, 800, 180, 812), fill=(180, 70, 30))
+        self.assertGreater(g.find_exercise_top(image, .65), 780)
+
     def test_first_problem_near_page_top_is_detected(self):
         image = Image.new('RGB', (1000, 1300), 'white')
         draw = ImageDraw.Draw(image)

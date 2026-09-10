@@ -124,10 +124,12 @@ def main() -> None:
     parser.add_argument("--scratch", type=Path, default=Path("tmp/pdfs/review-ranges"))
     parser.add_argument("--lookback", type=int, default=6)
     parser.add_argument("--reuse-ocr", action="store_true")
+    parser.add_argument("--chapters", type=int, nargs="+")
     parser.add_argument("--ocr-script", type=Path, default=Path("scripts/windows-ocr.ps1"))
     args = parser.parse_args()
 
     data = json.loads(args.index.read_text(encoding="utf-8"))
+    selected_chapters = set(args.chapters or [])
     pdfs = {"1": args.book1, "2": args.book2}
     args.scratch.mkdir(parents=True, exist_ok=True)
 
@@ -137,7 +139,9 @@ def main() -> None:
         book_scratch = args.scratch / f"book-{book_id}"
         book_scratch.mkdir(parents=True, exist_ok=True)
         required_pages: set[int] = set()
-        for chapter in book["chapters"].values():
+        for chapter_number, chapter in book["chapters"].items():
+            if selected_chapters and int(chapter_number) not in selected_chapters:
+                continue
             exercise_page = int(chapter["exercisePrintedPage"]) + int(data["pdfPageOffset"])
             required_pages.update(range(max(1, exercise_page - args.lookback), exercise_page + 1))
         for page in sorted(required_pages):
@@ -155,6 +159,8 @@ def main() -> None:
 
     for book_id, book in data["books"].items():
         for chapter_number, chapter in book["chapters"].items():
+            if selected_chapters and int(chapter_number) not in selected_chapters:
+                continue
             exercise_page = int(chapter["exercisePrintedPage"]) + int(data["pdfPageOffset"])
             candidates = []
             for page in range(max(1, exercise_page - args.lookback), exercise_page + 1):
@@ -162,7 +168,13 @@ def main() -> None:
                 candidates.append(ocr_pages[page_key(image)])
             start_page, start_y, _heading = find_review_start(candidates)
             exercise_image = Image.open(rendered[(book_id, exercise_page)]).convert("RGB")
-            exercise_y = generator.find_exercise_top(exercise_image) / exercise_image.height
+            first_problem = chapter["problems"]["1"]["segments"][0]
+            if int(first_problem["page"]) != exercise_page:
+                raise ValueError(f"Chapter {chapter_number}: first problem is not on exercise page")
+            exercise_y = generator.find_exercise_top(
+                exercise_image,
+                float(first_problem["y"]),
+            ) / exercise_image.height
             exercise_image.close()
             segments = build_review_segments(start_page, start_y, exercise_page, exercise_y)
             chapter["reviewSegments"] = segments

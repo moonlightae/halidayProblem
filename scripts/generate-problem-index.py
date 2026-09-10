@@ -175,10 +175,15 @@ def group_rows(rows: list[int], max_gap: int = 3) -> list[list[int]]:
     return groups
 
 
-def find_exercise_top(image: Image.Image) -> int:
+def find_exercise_top(image: Image.Image, first_problem_y: float | None = None) -> int:
     width, height = image.size
     candidates: list[int] = []
-    for y in range(int(height * 0.05), int(height * 0.9)):
+    search_top = int(height * 0.05)
+    search_bottom = int(height * 0.9)
+    if first_problem_y is not None:
+        search_top = int(height * max(0.05, first_problem_y - 0.2))
+        search_bottom = int(height * max(0.06, first_problem_y - 0.004))
+    for y in range(search_top, search_bottom):
         xs = [
             x
             for x in range(int(width * 0.035), int(width * 0.27))
@@ -189,9 +194,11 @@ def find_exercise_top(image: Image.Image) -> int:
     groups = group_rows(candidates, 4)
     if not groups:
         return int(height * 0.065)
-    # The first wide orange band is the exercise heading. A later diagram
-    # can contain a much larger orange area and must not move the page top.
-    group = groups[0]
+    # When the first problem position is known, use the nearest orange heading
+    # above it. This prevents an orange CHAPTER running header from being
+    # mistaken for the exercise heading (chapter 26). Otherwise retain the
+    # original first-band behavior used during problem discovery.
+    group = groups[-1] if first_problem_y is not None else groups[0]
     return max(int(height * 0.06), group[0] - 4)
 
 
