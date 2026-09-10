@@ -112,6 +112,15 @@ class IndexRegressionTests(unittest.TestCase):
             for segment in chapter['reviewSegments']:
                 self.assertGreater(segment['height'], .02)
                 self.assertLessEqual(segment['y'] + segment['height'], 1.00001)
+            review_end = chapter['reviewSegments'][-1]
+            first_problem = chapter['problems']['1']['segments'][0]
+            if review_end['page'] == first_problem['page']:
+                gap = first_problem['y'] - (review_end['y'] + review_end['height'])
+                self.assertGreaterEqual(gap, 0, f'chapter {number}: review overlaps problem 1')
+                self.assertLess(gap, .06, f'chapter {number}: review ends too early')
+            else:
+                self.assertEqual(review_end['page'] + 1, first_problem['page'])
+                self.assertLess(first_problem['y'], .12, f'chapter {number}: missing review continuation')
             for problem in chapter['problems'].values():
                 for segment in problem['segments']:
                     self.assertFalse(segment['y'] < .06 and segment['height'] < .012)
