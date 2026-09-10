@@ -17,6 +17,7 @@ import {
   Plus,
   Search,
   Upload,
+  X,
 } from 'lucide-react';
 import {
   GlobalWorkerOptions,
@@ -51,12 +52,14 @@ function ProblemCanvas({
   zoom,
   index,
   label,
+  loadingLabel = '문제를 선명하게 불러오는 중',
 }: {
   document: PDFDocumentProxy;
   segment: CropSegment;
   zoom: number;
   index: number;
   label?: string;
+  loadingLabel?: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -119,7 +122,7 @@ function ProblemCanvas({
       )}
       {status === 'loading' && (
         <div className="segment-loading" role="status">
-          <LoaderCircle size={18} /> 문제를 선명하게 불러오는 중
+          <LoaderCircle size={18} /> {loadingLabel}
         </div>
       )}
       {status === 'error' && (
@@ -150,9 +153,10 @@ function App() {
   const [showChapterReview, setShowChapterReview] = useState(false);
   const autoConnectStarted = useRef(false);
   const objectUrls = useRef<Partial<Record<BookId, string>>>({});
+  const reviewCloseRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    fetch('/problem-index.json?v=5', { cache: 'no-store' })
+    fetch('/problem-index.json?v=6', { cache: 'no-store' })
       .then((response) => {
         if (!response.ok) throw new Error('Index load failed');
         return response.json() as Promise<ProblemIndex>;
@@ -220,10 +224,6 @@ function App() {
   const activeChapter = activeBook?.chapters[String(selection.chapter)];
   const activeProblem = activeChapter?.problems[String(selection.problem)];
   const activePdf = loadedBooks[activeBookId]?.document;
-  const reviewPage =
-    catalog && activeChapter
-      ? activeChapter.exercisePrintedPage + catalog.pdfPageOffset - 1
-      : null;
   const chapterInputNumber = Number(chapterInput);
   const problemInputNumber = Number(problemInput);
   const draftChapter =
@@ -289,6 +289,23 @@ function App() {
   useEffect(() => {
     setShowChapterReview(false);
   }, [selection.chapter]);
+
+  useEffect(() => {
+    if (!showChapterReview) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowChapterReview(false);
+    };
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', closeOnEscape);
+    reviewCloseRef.current?.focus();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+      previousFocus?.focus();
+    };
+  }, [showChapterReview]);
 
   async function selectPdf(bookId: BookId, event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -485,6 +502,14 @@ function App() {
           <button className="search-button" type="submit" disabled={!catalog}>
             <Search size={18} /> 문제 보기
           </button>
+          <button
+            className="review-open-button"
+            type="button"
+            disabled={!activePdf || !activeChapter?.reviewSegments.length}
+            onClick={() => setShowChapterReview(true)}
+          >
+            <BookOpen size={18} /> 이 단원 개념 복습하기
+          </button>
         </form>
 
         <p className="privacy-note">
@@ -571,8 +596,7 @@ function App() {
               )}
             </div>
           ) : activeProblem ? (
-            <div className="viewer-content" style={{ width: `${Math.round(760 * zoom)}px` }}>
-              <article className="problem-sheet">
+              <article className="problem-sheet" style={{ width: `${Math.round(760 * zoom)}px` }}>
                 <div className="sheet-meta">
                   <span>{activeBook?.label}</span>
                   <span>
@@ -601,37 +625,6 @@ function App() {
                   </section>
                 ))}
               </article>
-
-              <button
-                className="review-toggle"
-                type="button"
-                aria-expanded={showChapterReview}
-                aria-controls="chapter-review"
-                onClick={() => setShowChapterReview((value) => !value)}
-              >
-                <BookOpen size={19} />
-                {showChapterReview ? '개념 복습 닫기' : '이 단원 개념 복습하기'}
-              </button>
-
-              {showChapterReview && reviewPage && (
-                <section className="chapter-review" id="chapter-review">
-                  <div className="review-heading">
-                    <div>
-                      <span>CHAPTER {selection.chapter}</span>
-                      <h2>정리 및 요약</h2>
-                    </div>
-                    <small>교재 {activeChapter.exercisePrintedPage - 1}쪽</small>
-                  </div>
-                  <ProblemCanvas
-                    document={activePdf}
-                    segment={{ page: reviewPage, x: 0, y: 0, width: 1, height: 1 }}
-                    zoom={zoom}
-                    index={0}
-                    label={`${selection.chapter}단원 개념 정리 페이지`}
-                  />
-                </section>
-              )}
-            </div>
           ) : (
             <div className="empty-state error-state">
               <strong>해당 문제를 찾지 못했습니다.</strong>
@@ -647,6 +640,53 @@ function App() {
           )}
         </footer>
       </main>
+
+      {showChapterReview && activePdf && activeChapter && (
+        <div
+          className="review-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowChapterReview(false);
+          }}
+        >
+          <section
+            className="review-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="review-modal-title"
+          >
+            <header className="review-modal-header">
+              <div>
+                <span>CHAPTER {selection.chapter}</span>
+                <h2 id="review-modal-title">{activeChapter.title} · 정리 및 요약</h2>
+                <p>정리 및 요약 시작부터 연습문제 직전까지</p>
+              </div>
+              <button
+                ref={reviewCloseRef}
+                type="button"
+                aria-label="개념 복습 닫기"
+                onClick={() => setShowChapterReview(false)}
+              >
+                <X size={21} />
+              </button>
+            </header>
+            <div className="review-modal-body">
+              <div className="review-pages">
+                {activeChapter.reviewSegments.map((segment, index) => (
+                  <ProblemCanvas
+                    key={`review-${selection.chapter}-${segment.page}-${index}`}
+                    document={activePdf}
+                    segment={segment}
+                    zoom={1}
+                    index={index}
+                    label={`${selection.chapter}단원 개념 정리 ${index + 1}`}
+                    loadingLabel="개념 정리를 선명하게 불러오는 중"
+                  />
+                ))}
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

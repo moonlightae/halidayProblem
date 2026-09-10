@@ -20,6 +20,7 @@ export interface ProblemEntry {
 export interface ChapterEntry {
   title: string;
   exercisePrintedPage: number;
+  reviewSegments: CropSegment[];
   problemCount: number;
   problems: Record<string, ProblemEntry>;
   diagnostics: Array<{ page: number; left: number; right: number }>;

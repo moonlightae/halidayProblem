@@ -31,7 +31,7 @@ if (-not $engine) {
   throw 'Windows Korean OCR is not available.'
 }
 
-$pages = foreach ($imagePath in Get-Content -LiteralPath $InputList) {
+$pages = foreach ($imagePath in Get-Content -LiteralPath $InputList -Encoding UTF8) {
   if (-not $imagePath) { continue }
   $fullPath = [System.IO.Path]::GetFullPath($imagePath)
   $file = Await-Result ([Windows.Storage.StorageFile]::GetFileFromPathAsync($fullPath)) ([Windows.Storage.StorageFile])

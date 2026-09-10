@@ -47,6 +47,18 @@ python -B scripts/render-chapter-review.py 2 24 `
 The review renderer includes both the main problem segments and any separately
 attached figure segments. Its output stays under the ignored `tmp` directory.
 
+To add the complete `Review & Summary` range for every chapter, including the
+portion above the exercise heading on the first problem page, run:
+
+```powershell
+python -B scripts/generate-review-ranges.py --book1 <volume-1.pdf> `
+  --book2 <volume-2.pdf> --pdftoppm <pdftoppm.exe>
+```
+
+This scans the final pages of every chapter with offline Korean OCR, crops from
+the `정리 및 요약` heading to the `연습문제` heading, and bumps the published
+index version. Review ranges may contain multiple page segments.
+
 `generate-problem-index.py --chapters ...` supports selective regeneration while
 retaining the full book's chapter boundaries. It requires an existing output
 index to avoid publishing an accidentally incomplete catalog.

@@ -90,7 +90,7 @@ class IndexRegressionTests(unittest.TestCase):
 
     def test_published_index_is_complete_and_validated(self):
         data = json.loads(Path('public/problem-index.json').read_text(encoding='utf-8'))
-        self.assertEqual(data['version'], 5)
+        self.assertEqual(data['version'], 6)
         chapters = {int(key): chapter for book in data['books'].values() for key, chapter in book['chapters'].items()}
         self.assertEqual(set(chapters), set(range(1, 45)))
         self.assertEqual(sum(chapter['problemCount'] for chapter in chapters.values()), 2637)
@@ -98,6 +98,13 @@ class IndexRegressionTests(unittest.TestCase):
             self.assertEqual(chapter['problemCount'], g.PROBLEM_COUNTS[number])
             self.assertEqual(chapter['validation']['printedNumbersChecked'], chapter['problemCount'])
             self.assertTrue(all(problem['segments'] for problem in chapter['problems'].values()))
+            self.assertTrue(chapter['reviewSegments'])
+            first_problem_page = chapter['problems']['1']['segments'][0]['page']
+            self.assertLessEqual(chapter['reviewSegments'][0]['page'], first_problem_page)
+            self.assertLessEqual(chapter['reviewSegments'][-1]['page'], first_problem_page)
+            for segment in chapter['reviewSegments']:
+                self.assertGreater(segment['height'], .02)
+                self.assertLessEqual(segment['y'] + segment['height'], 1.00001)
             for problem in chapter['problems'].values():
                 for segment in problem['segments']:
                     self.assertFalse(segment['y'] < .06 and segment['height'] < .012)
