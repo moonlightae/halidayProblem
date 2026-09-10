@@ -441,6 +441,7 @@ select:focus-visible {
 }
 
 .problem-sheet {
+  width: 100%;
   max-width: 100%;
   padding: clamp(17px, 2.3vw, 30px);
   border: 1px solid #d5dde7;
@@ -451,6 +452,75 @@ select:focus-visible {
     0 18px 44px rgb(31 48 73 / 14%),
     7px 7px 0 #dfe6ef;
   transition: width 160ms ease;
+}
+
+.viewer-content {
+  display: flex;
+  max-width: 100%;
+  align-items: stretch;
+  flex-direction: column;
+  transition: width 160ms ease;
+}
+
+.review-toggle {
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  margin-top: 24px;
+  border: 1px solid #245b9f;
+  border-radius: 4px;
+  color: #fff;
+  background: linear-gradient(135deg, #183d6d, #2f6fbd);
+  box-shadow: 0 10px 24px rgb(29 73 127 / 18%);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.review-toggle:hover {
+  background: linear-gradient(135deg, #14355f, #255fa6);
+}
+
+.chapter-review {
+  width: 100%;
+  margin-top: 18px;
+  padding: clamp(14px, 2vw, 24px);
+  border: 1px solid #d5dde7;
+  border-radius: 4px;
+  background: var(--paper);
+  box-shadow: 0 18px 44px rgb(31 48 73 / 14%), 7px 7px 0 #dfe6ef;
+}
+
+.review-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
+  padding-bottom: 11px;
+  border-bottom: 2px solid #6d8c41;
+}
+
+.review-heading span {
+  color: #72819a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+}
+
+.review-heading h2 {
+  margin: 4px 0 0;
+  color: #314d2d;
+  font-family: Georgia, 'Noto Serif KR', serif;
+  font-size: clamp(1.1rem, 2vw, 1.35rem);
+}
+
+.review-heading small {
+  flex: 0 0 auto;
+  color: #7d8a9d;
+  font-size: 0.72rem;
 }
 
 .sheet-meta {
@@ -730,6 +800,15 @@ select:focus-visible {
 
   .problem-sheet {
     padding: 14px;
+    box-shadow: 4px 5px 0 #dfe6ef, 0 12px 30px rgb(31 48 73 / 12%);
+  }
+
+  .review-toggle {
+    margin-top: 18px;
+  }
+
+  .chapter-review {
+    padding: 12px;
     box-shadow: 4px 5px 0 #dfe6ef, 0 12px 30px rgb(31 48 73 / 12%);
   }
 

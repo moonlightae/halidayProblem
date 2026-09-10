@@ -147,6 +147,7 @@ function App() {
       : '사용할 교재 PDF 두 권을 선택해 주세요.',
   );
   const [zoom, setZoom] = useState(1);
+  const [showChapterReview, setShowChapterReview] = useState(false);
   const autoConnectStarted = useRef(false);
   const objectUrls = useRef<Partial<Record<BookId, string>>>({});
 
@@ -219,6 +220,10 @@ function App() {
   const activeChapter = activeBook?.chapters[String(selection.chapter)];
   const activeProblem = activeChapter?.problems[String(selection.problem)];
   const activePdf = loadedBooks[activeBookId]?.document;
+  const reviewPage =
+    catalog && activeChapter
+      ? activeChapter.exercisePrintedPage + catalog.pdfPageOffset - 1
+      : null;
   const chapterInputNumber = Number(chapterInput);
   const problemInputNumber = Number(problemInput);
   const draftChapter =
@@ -280,6 +285,10 @@ function App() {
 
     return () => lifecycle.abort();
   }, [catalog, loadedBooks]);
+
+  useEffect(() => {
+    setShowChapterReview(false);
+  }, [selection.chapter]);
 
   async function selectPdf(bookId: BookId, event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -562,35 +571,67 @@ function App() {
               )}
             </div>
           ) : activeProblem ? (
-            <article className="problem-sheet" style={{ width: `${Math.round(760 * zoom)}px` }}>
-              <div className="sheet-meta">
-                <span>{activeBook?.label}</span>
-                <span>
-                  {selection.chapter}-{selection.problem}
-                </span>
-              </div>
-              {activeProblem.segments.map((segment, index) => (
-                <ProblemCanvas
-                  key={`${selection.chapter}-${selection.problem}-${index}-${zoom}`}
-                  document={activePdf}
-                  segment={segment}
-                  zoom={zoom}
-                  index={index}
-                />
-              ))}
-              {activeProblem.figures?.map((segment, index) => (
-                <section className="related-figure" key={`figure-${segment.page}-${segment.y}`}>
-                  <span>{segment.label}</span>
+            <div className="viewer-content" style={{ width: `${Math.round(760 * zoom)}px` }}>
+              <article className="problem-sheet">
+                <div className="sheet-meta">
+                  <span>{activeBook?.label}</span>
+                  <span>
+                    {selection.chapter}-{selection.problem}
+                  </span>
+                </div>
+                {activeProblem.segments.map((segment, index) => (
                   <ProblemCanvas
+                    key={`${selection.chapter}-${selection.problem}-${index}-${zoom}`}
                     document={activePdf}
                     segment={segment}
                     zoom={zoom}
+                    index={index}
+                  />
+                ))}
+                {activeProblem.figures?.map((segment, index) => (
+                  <section className="related-figure" key={`figure-${segment.page}-${segment.y}`}>
+                    <span>{segment.label}</span>
+                    <ProblemCanvas
+                      document={activePdf}
+                      segment={segment}
+                      zoom={zoom}
+                      index={0}
+                      label={`${segment.label} 이미지 ${index + 1}`}
+                    />
+                  </section>
+                ))}
+              </article>
+
+              <button
+                className="review-toggle"
+                type="button"
+                aria-expanded={showChapterReview}
+                aria-controls="chapter-review"
+                onClick={() => setShowChapterReview((value) => !value)}
+              >
+                <BookOpen size={19} />
+                {showChapterReview ? '개념 복습 닫기' : '이 단원 개념 복습하기'}
+              </button>
+
+              {showChapterReview && reviewPage && (
+                <section className="chapter-review" id="chapter-review">
+                  <div className="review-heading">
+                    <div>
+                      <span>CHAPTER {selection.chapter}</span>
+                      <h2>정리 및 요약</h2>
+                    </div>
+                    <small>교재 {activeChapter.exercisePrintedPage - 1}쪽</small>
+                  </div>
+                  <ProblemCanvas
+                    document={activePdf}
+                    segment={{ page: reviewPage, x: 0, y: 0, width: 1, height: 1 }}
+                    zoom={zoom}
                     index={0}
-                    label={`${segment.label} 이미지 ${index + 1}`}
+                    label={`${selection.chapter}단원 개념 정리 페이지`}
                   />
                 </section>
-              ))}
-            </article>
+              )}
+            </div>
           ) : (
             <div className="empty-state error-state">
               <strong>해당 문제를 찾지 못했습니다.</strong>
